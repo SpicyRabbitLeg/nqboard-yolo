@@ -1,0 +1,49 @@
+# 应用配置
+app:
+  host: "0.0.0.0"
+  port: 8000
+  debug: true
+  name: "Video AI Service"
+  version: "0.1.0"
+
+# Redis 配置
+redis:
+  host: "localhost"
+  port: 6379
+  db: 0
+  password: ""
+
+# YOLO 模型配置
+yolo:
+  confidence: 0.5
+  iou: 0.45
+
+# 模型路径配置
+models:
+  animal: "yolo11m.pt"
+  fire: "yolo11-firedetect.pt"
+  hardhat: "yolo11-hardhat.pt"
+
+# 回调配置
+callback:
+  timeout: 5
+  status_interval: 5
+
+# 视频流配置
+video:
+  rtsp_timeout: 10
+  frame_skip: 5
+
+# 支持的识别类型
+supported_types:
+  - "CAT"
+  - "DOG"
+  - "FIRE"
+  - "HARDHAT"
+  - "NO_HARDHAT"
+
+# 日志配置
+logging:
+  level: "INFO"
+  rotation: "10 MB"
+  retention: "30 days"

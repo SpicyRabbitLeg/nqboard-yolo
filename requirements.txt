@@ -1,0 +1,19 @@
+# 生产环境依赖
+fastapi==0.95.2
+uvicorn[standard]==0.39.0
+opencv-python==4.8.1.78
+ultralytics==8.3.241
+requests==2.32.5
+pydantic==1.10.13
+python-multipart==0.0.20
+loguru==0.7.3
+redis==7.0.1
+python-dotenv==1.2.1
+aiohttp==3.10.11
+numpy==1.24.4
+pillow==11.3.0
+pyyaml==6.0.3
+
+
+
+
