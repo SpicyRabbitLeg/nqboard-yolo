@@ -15,7 +15,7 @@
 
 ## 技术栈
 
-- **Python 3.8+**
+- **Python 3.9+**
 - **FastAPI** - Web 框架
 - **YOLO11 (Ultralytics)** - 目标检测
 - **OpenCV** - 图像处理
@@ -29,19 +29,13 @@
 ```bash
 # python版本 3.9.x
 # 使用 pip   
-pip install -e .
+pip install -r requirements.txt
 
-# 或使用 poetry
-poetry install
 ```
 
 ### 2. 环境配置
 
 复制环境变量模板并配置：
-
-```bash
-cp .env.example .env
-```
 
 编辑 `.env` 文件，配置以下参数：
 
@@ -69,9 +63,6 @@ STATUS_INTERVAL=5
 ### 3. 启动服务
 
 ```bash
-# 开发模式（热重载）
-uvicorn src.com.mx.__main__:app --reload --host 0.0.0.0 --port 9007
-
 # 生产模式
 python -m src.com.mx
 ```
@@ -137,51 +128,6 @@ video_ai/
 ├── data/                  # 数据文件
 └── docs/                  # 文档
 ```
-
-## 开发
-
-### 安装开发依赖
-
-```bash
-pip install -e ".[dev]"
-```
-
-### 代码格式化
-
-```bash
-# 格式化代码
-black src/
-isort src/
-
-# 代码检查
-flake8 src/
-mypy src/
-```
-
-### 运行测试
-
-```bash
-pytest tests/
-```
-
-## 部署
-
-### Docker 部署
-
-```bash
-# 构建镜像
-docker build -t video-ai .
-
-# 运行容器
-docker run -p 9007:9007 --env-file .env video-ai
-```
-
-### 生产环境建议
-
-1. 使用 Gunicorn + Uvicorn 作为生产服务器
-2. 配置 Redis 集群提高可靠性
-3. 使用 Nginx 作为反向代理
-4. 配置日志轮转和监控
 
 ## 许可证
 
