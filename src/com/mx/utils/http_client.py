@@ -86,26 +86,18 @@ class AsyncHTTPClient:
             return False
 
 
-def encode_frame_to_base64(frame, width=640, height=480) -> str:
+def encode_frame_to_base64(frame, width=640, height=480, quality=80) -> str:
     """
-    🔥 已优化：固定图片大小 + 强力压缩 → 转 Base64
-    Args:
-        frame: OpenCV 图像帧
-        width: 固定宽度
-        height: 固定高度
-    Returns:
-        str: Base64 编码的字符串
+    🔥 已优化：固定图片大小 + 可调节质量 → 转 Base64
     """
-    # 1. 强制缩放到固定尺寸（核心优化）
     frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
 
-    # 2. JPEG 压缩（质量调低，更小）
-    success, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 60])
+    # 质量参数可调，建议 70-95（越高越清晰但文件越大）
+    success, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, quality])
     
     if not success:
         raise ValueError("图像编码失败")
     
-    # 3. 转 Base64
     return base64.b64encode(buffer).decode('utf-8')
 
 
