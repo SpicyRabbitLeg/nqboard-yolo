@@ -185,7 +185,6 @@ secrets/
 .hatch/
 
 # Project specific directories
-models/
 checkpoints/
 outputs/
 results/
