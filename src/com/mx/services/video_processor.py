@@ -1,8 +1,10 @@
 """
-视频流处理服务（带帧读取失败兜底方案）
+视频流处理服务（带帧读取失败兜底方案，支持 GPU 加速）
 """
 
 import asyncio
+import platform
+import sys
 from datetime import datetime
 from typing import Dict, Any, Optional, Set
 import cv2
@@ -16,7 +18,11 @@ from .yolo_detector import detector
 
 
 class VideoProcessor:
-    """视频处理器（带兜底重连机制）"""
+    """视频处理器（带兜底重连机制，支持 GPU 加速）"""
+    
+    # 类级别的 GPU 可用性检测
+    _gpu_available: Optional[bool] = None
+    _gstreamer_available: Optional[bool] = None
     
     def __init__(self, device_id: str, rtsp_url: str, target_types: Set[str], callback_url: str):
         """
@@ -37,6 +43,10 @@ class VideoProcessor:
         self.rtsp_username: Optional[str] = None
         self.rtsp_password: Optional[str] = None
 
+        # GPU 加速模式
+        self.use_gpu: bool = settings.USE_GPU_DECODE
+        self._capture_type: str = "unknown"  # 用于日志记录
+        
         # ===================== 兜底方案新增参数 =====================
         self.consecutive_read_failures = 0  # 连续读帧失败计数
         self.max_consecutive_failures = settings.MAX_CONSECUTIVE_READ_FAILURES  # 最大连续失败次数（超过触发重连）
@@ -51,6 +61,136 @@ class VideoProcessor:
         self.person_stay_threshold: float = settings.PERSON_STAY_THRESHOLD  # 停留阈值（秒）
         self.person_absence_reset: float = settings.PERSON_ABSENCE_RESET    # 视为离开并重置状态的时间（秒）
 
+    @property
+    def capture_info(self) -> str:
+        """获取当前捕获方式信息"""
+        return f"{self._capture_type} (GPU: {'启用' if self.use_gpu else '禁用'})"
+    
+    @staticmethod
+    def check_gpu_available() -> bool:
+        """检测 NVIDIA GPU 是否可用"""
+        if VideoProcessor._gpu_available is not None:
+            return VideoProcessor._gpu_available
+        
+        VideoProcessor._gpu_available = False
+        
+        try:
+            # 检查 NVIDIA GPU (通过 OpenCV 或 torch)
+            has_cuda = cv2.cuda.getCudaEnabledDeviceCount() > 0 if hasattr(cv2, 'cuda') else False
+            
+            if not has_cuda:
+                try:
+                    import torch
+                    VideoProcessor._gpu_available = torch.cuda.is_available()
+                except ImportError:
+                    pass
+            
+            if VideoProcessor._gpu_available:
+                logger.info("检测到 NVIDIA GPU，GPU 加速可用")
+            else:
+                logger.info("未检测到 NVIDIA GPU，将使用 CPU 解码")
+                
+        except Exception as e:
+            logger.warning(f"GPU 检测失败: {e}")
+            VideoProcessor._gpu_available = False
+        
+        return VideoProcessor._gpu_available
+    
+    @staticmethod
+    def check_gstreamer_available() -> bool:
+        """检测 GStreamer 是否可用"""
+        if VideoProcessor._gstreamer_available is not None:
+            return VideoProcessor._gstreamer_available
+        
+        VideoProcessor._gstreamer_available = cv2.videoio_registry.hasBackend(cv2.CAP_GSTREAMER)
+        
+        if VideoProcessor._gstreamer_available:
+            logger.info("GStreamer 后端可用")
+        else:
+            logger.warning("GStreamer 后端不可用，将使用标准 OpenCV 解码")
+        
+        return VideoProcessor._gstreamer_available
+    
+    @staticmethod
+    def _create_gstreamer_pipeline(rtsp_url: str, latency: int = 100) -> str:
+        """
+        创建 GStreamer 管道（根据操作系统选择合适的硬件解码器）
+        
+        Args:
+            rtsp_url: RTSP 流地址
+            latency: 延迟阈值（毫秒）
+            
+        Returns:
+            GStreamer 管道字符串
+        """
+        system = platform.system()
+        
+        if system == "Linux":
+            # Linux: 使用 NVDEC 硬件解码
+            pipeline = (
+                f"rtspsrc location={rtsp_url} latency={latency} ! "
+                f"rtph264depay ! h264parse ! video/x-h264,stream-format=byte-stream ! "
+                f"nvv4l2decoder ! nvvidconv ! video/x-raw(memory:NVMM),format=I420 ! "
+                f"videoconvert ! video/x-raw,format=BGR ! appsink"
+            )
+        elif system == "Windows":
+            # Windows: 使用 D3D11 硬件解码
+            pipeline = (
+                f"rtspsrc location={rtsp_url} latency={latency} ! "
+                f"rtph264depay ! h264parse ! "
+                f"msdkh264dec ! videoconvert ! video/x-raw,format=BGR ! appsink"
+            )
+        else:
+            # 其他系统: 使用软件解码作为兜底
+            pipeline = (
+                f"rtspsrc location={rtsp_url} latency={latency} ! "
+                f"rtph264depay ! h264parse ! avdec_h264 ! "
+                f"videoconvert ! video/x-raw,format=BGR ! appsink"
+            )
+        
+        return pipeline
+    
+    def _create_capture(self, rtsp_url: str) -> cv2.VideoCapture:
+        """
+        创建视频捕获对象，优先使用 GPU 加速
+        
+        Args:
+            rtsp_url: 处理后的 RTSP URL（已包含认证信息）
+            
+        Returns:
+            VideoCapture 对象
+        """
+        # 检查 GPU 和 GStreamer 可用性
+        gpu_available = self.check_gpu_available()
+        gstreamer_available = self.check_gstreamer_available()
+        
+        # 如果配置禁用 GPU 或 GPU/GStreamer 不可用，使用标准 CPU 解码
+        if not self.use_gpu or not gpu_available or not gstreamer_available:
+            self._capture_type = "CPU (OpenCV)"
+            if self.use_gpu and not gpu_available:
+                logger.warning(f"设备 {self.device_id} GPU 不可用，回退到 CPU 解码")
+            elif self.use_gpu and not gstreamer_available:
+                logger.warning(f"设备 {self.device_id} GStreamer 不可用，回退到 CPU 解码")
+            return cv2.VideoCapture(rtsp_url)
+        
+        # 尝试创建 GPU 加速的 GStreamer 管道
+        try:
+            pipeline = self._create_gstreamer_pipeline(rtsp_url)
+            self._capture_type = "GPU (GStreamer)"
+            cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+            
+            # 验证是否能成功打开
+            if not cap.isOpened():
+                raise RuntimeError("GStreamer 管道创建失败")
+            
+            logger.info(f"设备 {self.device_id} 使用 GPU 加速解码 (GStreamer)")
+            return cap
+            
+        except Exception as e:
+            logger.warning(f"设备 {self.device_id} GPU 加速失败: {e}，回退到 CPU 解码")
+            self._capture_type = "CPU (OpenCV)"
+            return cv2.VideoCapture(rtsp_url)
+    
     def set_auth(self, username: Optional[str], password: Optional[str]):
         """设置RTSP认证信息"""
         self.rtsp_username = username
@@ -77,7 +217,8 @@ class VideoProcessor:
             if self.cap:
                 self.cap.release()
             
-            self.cap = cv2.VideoCapture(rtsp_url)
+            # 使用 GPU 加速或 CPU 创建捕获对象
+            self.cap = self._create_capture(rtsp_url)
             self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
             self.cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, settings.RTSP_TIMEOUT * 1000)
             

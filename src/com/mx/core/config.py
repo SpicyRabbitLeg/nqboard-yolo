@@ -48,6 +48,10 @@ class Settings(BaseSettings):
     PERSON_STAY_THRESHOLD: float = 5.0        # PERSON 停留阈值（秒）
     PERSON_ABSENCE_RESET: float = 2.0         # PERSON 视为离开并重置状态的时间（秒）
     
+    # GPU 加速配置
+    USE_GPU_DECODE: bool = True              # 是否启用 GPU 视频解码加速
+    GSTREAMER_LATENCY: int = 100             # GStreamer 管道延迟（毫秒）
+    
     # 支持的识别类型
     SUPPORTED_TYPES: List[str] = ["CAT", "DOG", "FIRE", "HARDHAT", "NO_HARDHAT", "PERSON"]
 
