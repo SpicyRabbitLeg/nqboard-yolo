@@ -3,7 +3,10 @@
 """
 
 import asyncio
+import random
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+from functools import partial
 from typing import Dict, Any, Optional, Set
 import cv2
 import numpy as np
@@ -50,6 +53,12 @@ class VideoProcessor:
         self.person_intrusion_reported: bool = False          # 当前这一段连续停留是否已经上报
         self.person_stay_threshold: float = settings.PERSON_STAY_THRESHOLD  # 停留阈值（秒）
         self.person_absence_reset: float = settings.PERSON_ABSENCE_RESET    # 视为离开并重置状态的时间（秒）
+
+        # 线程池（用于读帧）
+        self._rtsp_executor = ThreadPoolExecutor(
+            max_workers=settings.RTSP_THREAD_POOL_SIZE,
+            thread_name_prefix=f"rtsp_reader_{device_id}_"
+        )
 
     def set_auth(self, username: Optional[str], password: Optional[str]):
         """设置RTSP认证信息"""
@@ -127,6 +136,7 @@ class VideoProcessor:
         if self.cap:
             self.cap.release()
             self.cap = None
+        self._rtsp_executor.shutdown(wait=False)
         logger.info(f"设备 {self.device_id} 视频处理已停止")
 
     async def pause(self):
@@ -161,7 +171,9 @@ class VideoProcessor:
 
         # 修复核心：先判断cap不为None，再判断isOpened()
         while self.running:
-            await asyncio.sleep(self.reconnect_delay)
+            # 随机化延迟 ±50%，防止多设备同时重连造成风暴
+            jitter = self.reconnect_delay * random.uniform(0.5, 1.5)
+            await asyncio.sleep(jitter)
 
             # 尝试重连
             if await self.connect():
@@ -173,11 +185,23 @@ class VideoProcessor:
             self.reconnect_delay = min(self.reconnect_delay * 2, self.max_reconnect_delay)
             logger.warning(f"设备 {self.device_id} 重连失败，下次重试: {self.reconnect_delay}s")
 
-            # 发送离线状态回调
-            await self._send_status_callback()
+            # 发送离线状态回调（fire-and-forget）
+            asyncio.create_task(self._send_status_callback())
 
         self.is_reconnecting = False
 
+    async def _read_frame_async(self) -> tuple:
+        """在线程池中异步读取帧"""
+        loop = asyncio.get_event_loop()
+        read_fn = partial(self._read_frame_sync)
+        return await loop.run_in_executor(self._rtsp_executor, read_fn)
+    
+    def _read_frame_sync(self) -> tuple:
+        """同步读取帧（在线程池中执行）"""
+        if self.cap is None or not self.cap.isOpened():
+            return False, None
+        return self.cap.read()
+    
     async def _process_loop(self):
         """视频处理循环（带帧失败兜底）"""
         while self.running:
@@ -193,8 +217,8 @@ class VideoProcessor:
                     await asyncio.sleep(1)
                     return
 
-                # 读取帧
-                ret, frame = self.cap.read()
+                # 异步读取帧（不阻塞事件循环）
+                ret, frame = await self._read_frame_async()
 
                 if not ret:
                     self.consecutive_read_failures += 1
@@ -222,8 +246,8 @@ class VideoProcessor:
                 if self.frame_count % settings.FRAME_SKIP != 0:
                     continue
 
-                # 目标检测
-                detections = detector.detect(frame, list(self.target_types))
+                # 异步目标检测（不阻塞事件循环）
+                detections = await detector.async_detect(frame, list(self.target_types))
 
                 current_time = datetime.now()
 
@@ -275,7 +299,8 @@ class VideoProcessor:
     async def _send_recognize_callback(self, frame: np.ndarray, detection: Dict[str, Any]):
         try:
             detection_list = [detection]
-            frame_with_bbox = detector.draw_detections(frame, detection_list)
+            # 异步绘制检测框
+            frame_with_bbox = await detector.async_draw_detections(frame, detection_list)
             frame_base64 = encode_frame_to_base64(frame_with_bbox)
 
             callback_data = RecognizeCallback(

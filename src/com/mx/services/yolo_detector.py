@@ -4,6 +4,7 @@ YOLO 目标检测服务
 """
 
 import asyncio
+from functools import partial
 from typing import List, Dict, Any, Optional, Tuple, Set
 import cv2
 import numpy as np
@@ -33,6 +34,59 @@ class YOLODetector:
             "hardhat": settings.YOLO_HARDHAT_MODEL_PATH,  # 安全帽检测模型
         }
         self._load_models()
+        
+        # 并发控制
+        self._semaphore: Optional[asyncio.Semaphore] = None
+        self._executor = None
+    
+    def _init_async_components(self):
+        """初始化异步组件（在事件循环中调用）"""
+        if self._semaphore is None:
+            self._semaphore = asyncio.Semaphore(settings.MAX_CONCURRENT_INFERENCE)
+        if self._executor is None:
+            import concurrent.futures
+            self._executor = concurrent.futures.ThreadPoolExecutor(
+                max_workers=settings.INFERENCE_THREAD_POOL_SIZE,
+                thread_name_prefix="yolo_inference_"
+            )
+    
+    async def async_detect(self, frame: np.ndarray, target_types: List[str]) -> List[Dict[str, Any]]:
+        """
+        异步检测图像中的目标
+        
+        Args:
+            frame: 图像帧
+            target_types: 目标类型列表
+            
+        Returns:
+            List[Dict]: 检测结果列表
+        """
+        if self._semaphore is None or self._executor is None:
+            self._init_async_components()
+        
+        async with self._semaphore:
+            loop = asyncio.get_event_loop()
+            detect_fn = partial(self.detect, frame, target_types)
+            return await loop.run_in_executor(self._executor, detect_fn)
+    
+    async def async_draw_detections(self, frame: np.ndarray, 
+                                     detections: List[Dict[str, Any]]) -> np.ndarray:
+        """
+        异步在图像上绘制检测结果
+        
+        Args:
+            frame: 原始图像
+            detections: 检测结果
+            
+        Returns:
+            np.ndarray: 绘制后的图像
+        """
+        if self._executor is None:
+            self._init_async_components()
+        
+        loop = asyncio.get_event_loop()
+        draw_fn = partial(self.draw_detections, frame, detections)
+        return await loop.run_in_executor(self._executor, draw_fn)
     
     def _load_model(self, model_type: str):
         """加载指定类型的 YOLO 模型"""
